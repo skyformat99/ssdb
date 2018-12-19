@@ -29,7 +29,6 @@ private:
 
 	//Config *conf;
 	Link *serv_link;
-	IpFilter *ip_filter;
 	Fdevents *fdes;
 
 	Link* accept_link();
@@ -42,6 +41,8 @@ private:
 	int num_writers;
 	ProcWorkerPool *writer;
 	ProcWorkerPool *reader;
+	
+	bool readonly;
 
 	NetworkServer();
 
@@ -49,11 +50,13 @@ protected:
 	void usage(int argc, char **argv);
 
 public:
+	IpFilter *ip_filter;
 	void *data;
 	ProcMap proc_map;
 	int link_count;
 	bool need_auth;
 	std::string password;
+	double slowlog_timeout; // in ms, but in config file, it's in seconds
 
 	~NetworkServer();
 	

@@ -35,6 +35,7 @@ private:
 	static const int INIT = 1;
 	static const int COPY = 2;
 	static const int SYNC = 4;
+	static const int OUT_OF_SYNC = 8;
 	int status;
 
 	void migrate_old_status();
@@ -58,6 +59,10 @@ private:
 		return link != NULL;
 	}
 public:
+	// the max time wait for a noop or binlog message from master,
+	// after this time, the slave will disconnect from master.
+	// in seconds, default 30
+	int recv_timeout;
 	std::string auth;
 	Slave(SSDB *ssdb, SSDB *meta, const char *ip, int port, bool is_mirror=false);
 	~Slave();

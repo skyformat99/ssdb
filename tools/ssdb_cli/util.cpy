@@ -1,4 +1,23 @@
 
+function show_version(link){
+	try{
+		resp = link.request('info', []);
+		if(resp.code == 'ok'){
+			sys.stderr.write(resp.data[0] + ' ' + resp.data[2] + '\n\n');
+		}else{
+			sys.stderr.write(resp.message + '\n');
+			if(resp.code == 'noauth'){
+				//
+			}else{
+				sys.exit(0);
+			}
+		}
+	}catch(Exception e){
+		sys.stderr.write('Unexpected error: ' + str(e) + '\n');
+		sys.exit(0);
+	}
+}
+
 function dbsize(link){
 	resp = link.request('info', []);
 	foreach(resp.data as k=>v){

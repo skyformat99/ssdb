@@ -48,14 +48,8 @@ void ExpirationHandler::stop(){
 
 int ExpirationHandler::set_ttl(const Bytes &key, int64_t ttl){
 	int64_t expired = time_ms() + ttl * 1000;
-	char data[30];
-	int size = snprintf(data, sizeof(data), "%" PRId64, expired);
-	if(size <= 0){
-		log_error("snprintf return error!");
-		return -1;
-	}
-
-	int ret = ssdb->zset(this->list_name, key, Bytes(data, size));
+	std::string expire_str = str(expired);
+	int ret = ssdb->zset(this->list_name, key, expire_str);
 	if(ret == -1){
 		return -1;
 	}
@@ -66,7 +60,6 @@ int ExpirationHandler::set_ttl(const Bytes &key, int64_t ttl){
 	if(!fast_keys.empty() && expired <= fast_keys.max_score()){
 		fast_keys.add(s_key, expired);
 		if(fast_keys.size() > BATCH_SIZE){
-			log_debug("pop_back");
 			fast_keys.pop_back();
 		}
 	}else{
@@ -78,7 +71,9 @@ int ExpirationHandler::set_ttl(const Bytes &key, int64_t ttl){
 }
 
 int ExpirationHandler::del_ttl(const Bytes &key){
-	if(!this->fast_keys.empty()){
+	// 这样用是有 bug 的, 虽然 fast_keys 为空, 不代表整个 ttl 队列为空
+	// if(!this->fast_keys.empty()){
+	if(first_timeout != INT64_MAX){
 		fast_keys.del(key.String());
 		ssdb->zdel(this->list_name, key);
 	}
@@ -106,6 +101,7 @@ void ExpirationHandler::load_expiration_keys_from_db(int num){
 			// older version compatible
 			score *= 1000;
 		}
+		Locking l(&this->mutex);
 		fast_keys.add(key, score);
 	}
 	delete it;
@@ -113,19 +109,27 @@ void ExpirationHandler::load_expiration_keys_from_db(int num){
 }
 
 void ExpirationHandler::expire_loop(){
-	Locking l(&this->mutex);
 	if(!this->ssdb){
 		return;
 	}
 
-	if(this->fast_keys.empty()){
-		this->load_expiration_keys_from_db(BATCH_SIZE);
+	bool need_load = false;
+	{
+		Locking l(&this->mutex);
 		if(this->fast_keys.empty()){
-			this->first_timeout = INT64_MAX;
-			return;
+			need_load = true;
 		}
+		// 释放锁
 	}
-	
+	if(need_load){
+		this->load_expiration_keys_from_db(BATCH_SIZE);
+	}
+
+	Locking l(&this->mutex);
+	if(this->fast_keys.empty()){
+		this->first_timeout = INT64_MAX;
+		return;
+	}
 	int64_t score;
 	std::string key;
 	if(this->fast_keys.front(&key, &score)){
@@ -144,10 +148,19 @@ void* ExpirationHandler::thread_func(void *arg){
 	ExpirationHandler *handler = (ExpirationHandler *)arg;
 	
 	while(!handler->thread_quit){
-		if(handler->first_timeout > time_ms()){
+		bool need_sleep = false;
+		{
+			Locking l(&handler->mutex);
+			// fast_keys and expire_list_in_db empty
+			if(handler->first_timeout > time_ms()){
+				need_sleep = true;
+			}
+		}
+		if(need_sleep){
 			usleep(10 * 1000);
 			continue;
 		}
+		
 		handler->expire_loop();
 	}
 	

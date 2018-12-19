@@ -10,6 +10,7 @@ found in the LICENSE file.
 
 Slave::Slave(SSDB *ssdb, SSDB *meta, const char *ip, int port, bool is_mirror){
 	thread_quit = false;
+	this->recv_timeout = 30;
 	this->ssdb = ssdb;
 	this->meta = meta;
 	this->status = DISCONNECTED;
@@ -72,6 +73,9 @@ std::string Slave::stats() const{
 	case SYNC:
 		s.append("SYNC\n");
 		break;
+	case OUT_OF_SYNC:
+		s.append("OUT_OF_SYNC\n");
+		break;
 	}
 
 	s.append("    last_seq   : " + str(last_seq) + "\n");
@@ -131,10 +135,8 @@ void Slave::migrate_old_status(){
 }
 
 std::string Slave::status_key(){
-	static std::string key;
-	if(key.empty()){
-		key = "slave.status." + this->id_;
-	}
+	std::string key;
+	key = "slave.status." + this->id_;
 	return key;
 }
 
@@ -209,8 +211,7 @@ void* Slave::_run_thread(void *arg){
 	bool reconnect = false;
 	
 #define RECV_TIMEOUT		200
-#define MAX_RECV_TIMEOUT	15 * 1000
-#define MAX_RECV_IDLE		MAX_RECV_TIMEOUT/RECV_TIMEOUT
+	int max_idle = (slave->recv_timeout * 1000) / RECV_TIMEOUT;
 
 	while(!slave->thread_quit){
 		if(reconnect){
@@ -236,7 +237,7 @@ void* Slave::_run_thread(void *arg){
 			sleep(1);
 			continue;
 		}else if(events->empty()){
-			if(idle++ >= MAX_RECV_IDLE){
+			if(idle++ >= max_idle){
 				log_error("the master hasn't responsed for awhile, reconnect...");
 				idle = 0;
 				reconnect = true;
@@ -291,6 +292,12 @@ int Slave::proc(const std::vector<Bytes> &req){
 		case BinlogType::NOOP:
 			return this->proc_noop(log, req);
 			break;
+		case BinlogType::CTRL:
+			if(log.key() == "OUT_OF_SYNC"){
+				status = OUT_OF_SYNC;
+				log_error("OUT_OF_SYNC, you must reset this node manually!");
+			}
+			break;
 		case BinlogType::COPY:{
 			status = COPY;
 			if(req.size() >= 2){
@@ -336,12 +343,12 @@ int Slave::proc_copy(const Binlog &log, const std::vector<Bytes> &req){
 	switch(log.cmd()){
 		case BinlogCommand::BEGIN:
 			log_info("copy begin");
-			log_info("start flushdb...");
-			this->last_seq = 0;
-			this->last_key = "";
-			this->save_status();
-			ssdb->flushdb();
-			log_info("end flushdb.");
+			// log_info("start flushdb...");
+			// this->last_seq = 0;
+			// this->last_key = "";
+			// this->save_status();
+			// ssdb->flushdb();
+			// log_info("end flushdb.");
 			break;
 		case BinlogCommand::END:
 			log_info("copy end, copy_count: %" PRIu64 ", last_seq: %" PRIu64 ", seq: %" PRIu64,

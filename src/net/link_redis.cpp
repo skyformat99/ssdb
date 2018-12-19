@@ -45,6 +45,7 @@ struct RedisCommand_raw
 };
 
 static RedisCommand_raw cmds_raw[] = {
+	{STRATEGY_AUTO, "auth",		"auth",			REPLY_STATUS},
 	{STRATEGY_PING, "ping",		"ping",			REPLY_STATUS},
 
 	{STRATEGY_AUTO, "get",		"get",			REPLY_BULK},
@@ -198,31 +199,17 @@ int RedisLink::convert_req(){
 		}
 		return 0;
 	}
-	if(this->req_desc->strategy == STRATEGY_ZRANGE
-		|| this->req_desc->strategy == STRATEGY_ZREVRANGE)
-	{
-		recv_string.push_back(req_desc->ssdb_cmd);
+	if(this->req_desc->strategy == STRATEGY_ZRANGE || this->req_desc->strategy == STRATEGY_ZREVRANGE){
+		std::string cmd = "redis_";
+		cmd += req_desc->ssdb_cmd;
+		
+		recv_string.push_back(cmd);
+		recv_string.push_back(recv_bytes[1].String());
 		if(recv_bytes.size() >= 4){
-			int64_t start = recv_bytes[2].Int64();
-			int64_t end = recv_bytes[3].Int64();
-			
-			if((start >= 0 && end >= 0) || end == -1){
-				int64_t size;
-				if(end == -1){
-					size = -1;
-				}else{
-					if(this->req_desc->strategy == STRATEGY_REMRANGEBYSCORE){
-						size = end;
-					}else{
-						size = end - start + 1;
-					}
-				}
-				recv_string.push_back(recv_bytes[1].String());
-				recv_string.push_back(recv_bytes[2].String());
-				recv_string.push_back(str(size));
-			}
+			recv_string.push_back(recv_bytes[2].String());
+			recv_string.push_back(recv_bytes[3].String());
 		}
-		if(recv_bytes.size() > 4){
+		if(recv_bytes.size() >= 5){
 			std::string s = recv_bytes[4].String();
 			strtolower(&s);
 			recv_string.push_back(s);
@@ -357,42 +344,75 @@ int RedisLink::send_resp(Buffer *output, const std::vector<std::string> &resp){
 	if(resp.empty()){
 		return 0;
 	}
-	if(resp[0] == "error" || resp[0] == "fail" || resp[0] == "client_error"){
-		output->append("-ERR ");
-		if(resp.size() >= 2){
-			output->append(resp[1]);
-		}
-		output->append("\r\n");
-		return 0;
-	}
-	if(resp[0] == "noauth"){
-		output->append("-NOAUTH ");
-		if(resp.size() >= 2){
-			output->append(resp[1]);
-		}
-		output->append("\r\n");
-		return 0;
-	}
-	if(resp[0] == "not_found"){
-		output->append("$-1\r\n");
-		return 0;
-	}
 	if(resp[0] != "ok"){
-		output->append("-ERR server error\r\n");
+		if(resp[0] == "error" || resp[0] == "fail" || resp[0] == "client_error"){
+			output->append("-ERR ");
+			if(resp.size() >= 2){
+				output->append(resp[1]);
+			}
+			output->append("\r\n");
+		}else if(resp[0] == "not_found"){
+			output->append("$-1\r\n");
+		}else if(resp[0] == "noauth"){
+			output->append("-NOAUTH ");
+			if(resp.size() >= 2){
+				output->append(resp[1]);
+			}
+			output->append("\r\n");
+		}else{
+			output->append("-ERR server error\r\n");
+		}
 		return 0;
 	}
 	
+	// not supported command
 	if(req_desc == NULL){
-		output->append("+OK\r\n");
+		{
+			char buf[32];
+			snprintf(buf, sizeof(buf), "*%d\r\n", (int)resp.size() - 1);
+			output->append(buf);
+		}
+		for(int i=1; i<resp.size(); i++){
+			const std::string &val = resp[i];
+			char buf[32];
+			snprintf(buf, sizeof(buf), "$%d\r\n", (int)val.size());
+			output->append(buf);
+			output->append(val.data(), val.size());
+			output->append("\r\n");
+		}
 		return 0;
 	}
+	
 	if(req_desc->strategy == STRATEGY_PING){
 		output->append("+PONG\r\n");
 		return 0;
 	}
-	
 	if(req_desc->reply_type == REPLY_STATUS){
 		output->append("+OK\r\n");
+		return 0;
+	}
+	if(req_desc->reply_type == REPLY_BULK){
+		if(resp.size() >= 2){
+			const std::string &val = resp[1];
+			char buf[32];
+			snprintf(buf, sizeof(buf), "$%d\r\n", (int)val.size());
+			output->append(buf);
+			output->append(val.data(), val.size());
+			output->append("\r\n");
+		}else{
+			output->append("$0\r\n");
+		}
+		return 0;
+	}
+	if(req_desc->reply_type == REPLY_INT){
+		if(resp.size() >= 2){
+			const std::string &val = resp[1];
+			output->append(":");
+			output->append(val.data(), val.size());
+			output->append("\r\n");
+		}else{
+			output->append("$0\r\n");
+		}
 		return 0;
 	}
 	if(req_desc->strategy == STRATEGY_MGET || req_desc->strategy == STRATEGY_HMGET){
@@ -441,31 +461,6 @@ int RedisLink::send_resp(Buffer *output, const std::vector<std::string> &resp){
 
 		return 0;
 	}
-	if(req_desc->reply_type == REPLY_BULK){
-		if(resp.size() >= 2){
-			const std::string &val = resp[1];
-			char buf[32];
-			snprintf(buf, sizeof(buf), "$%d\r\n", (int)val.size());
-			output->append(buf);
-			output->append(val.data(), val.size());
-			output->append("\r\n");
-		}else{
-			output->append("$0\r\n");
-		}
-		return 0;
-	}
-	
-	if(req_desc->reply_type == REPLY_INT){
-		if(resp.size() >= 2){
-			const std::string &val = resp[1];
-			output->append(":");
-			output->append(val.data(), val.size());
-			output->append("\r\n");
-		}else{
-			output->append("$0\r\n");
-		}
-		return 0;
-	}
 	
 	if(req_desc->reply_type == REPLY_MULTI_BULK){
 		bool withscores = true;
@@ -499,10 +494,10 @@ int RedisLink::send_resp(Buffer *output, const std::vector<std::string> &resp){
 				i += 1;
 			}
 		}
-	}else{
-		output->append("-ERR server error\r\n");
+		return 0;
 	}
 	
+	output->append("-ERR server error\r\n");
 	return 0;
 }
 
@@ -561,7 +556,7 @@ int RedisLink::parse_req(Buffer *input){
 		size -= len + 1;
 		parsed += len + 1;
 		// compatiabl with both CRLF and LF
-		if(*ptr == '\n'){
+		if(size > 0 && *ptr == '\n'){
 			ptr += 1;
 			size -= 1;
 			parsed += 1;
